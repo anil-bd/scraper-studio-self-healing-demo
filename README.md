@@ -12,24 +12,15 @@ Node.js implementation of [Bright Data Scraper Studio AI Flow — Workflow 2: Up
    - Poll `GET /dca/collectors/{id}/refactor_template/progress` until done.
 5. **Re-scrape** with the healed collector and verify the data is now healthy.
 
-## Quick start
-
-`.env.example` ships pre-wired against a public Bright Data demo collector
-(`c_moh0s3kp1udrdi454s`) scraping product pages on
-[ecommerce-shop-brd.vercel.app](https://ecommerce-shop-brd.vercel.app/), so you
-only need to supply your own API key.
+## Setup
 
 ```bash
 git clone https://github.com/anil-bd/scraper-studio-self-healing-demo
 cd scraper-studio-self-healing-demo
 npm install
 cp .env.example .env
-# add your BRIGHTDATA_API_KEY (https://brightdata.com/cp/setting/users)
-npm start
+# fill in BRIGHTDATA_API_KEY, COLLECTOR_ID, TEST_URL, HEAL_PROMPT
 ```
-
-To demo healing on a different scraper, swap `COLLECTOR_ID`, `TEST_URL`, and
-`HEAL_PROMPT` in `.env`.
 
 | Var | What |
 |---|---|
