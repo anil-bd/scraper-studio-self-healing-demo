@@ -1,0 +1,19 @@
+{
+  "name": "scraper-studio-self-healing-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bright Data Scraper Studio AI Flow — Workflow 2: Update an existing scraper with Self-Healing.",
+  "type": "module",
+  "main": "self-healing.js",
+  "scripts": {
+    "start": "node self-healing.js",
+    "force-heal": "node self-healing.js --force-heal",
+    "no-heal": "node self-healing.js --no-heal"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
