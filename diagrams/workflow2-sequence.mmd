@@ -1,0 +1,37 @@
+sequenceDiagram
+  autonumber
+  participant Script as Your Node script
+  participant API as Bright Data API
+  participant Worker as AI heal worker
+  participant UI as Scraper Studio UI
+
+  Script->>API: POST /refactor_template { prompt }
+  API->>Worker: enqueue ia_*
+  API-->>Script: 200 (heal accepted)
+
+  loop poll every 5s
+    Script->>API: GET /refactor_template/progress
+    API-->>Script: status: pending → running, step: planner → ... → step_advance
+  end
+
+  Worker-->>API: produces template_b + preview_result
+  Script->>API: GET /refactor_template/progress
+  API-->>Script: status: pending_answer, step: user_approval, diff: {template_a, template_b}, preview_result
+
+  rect rgb(255, 240, 200)
+    Note over Script,UI: PUBLIC API GAP — no documented endpoint to approve.<br/>POST /refactor_template again → 409<br/>POST /automate_template → 403 (gated for our key)<br/>POST .../answer | /approve | /accept | /apply | /confirm | /feedback → 404<br/>custom_input shapes (4 tested) → all 409
+  end
+
+  UI->>API: (private call) accept template_b
+  API->>Worker: apply diff to collector
+  Worker-->>API: status: done
+
+  loop resume polling
+    Script->>API: GET /refactor_template/progress
+    API-->>Script: status: done
+  end
+
+  Script->>API: POST /dca/trigger (re-scrape on healed template)
+  API-->>Script: collection_id: j_*
+  Script->>API: GET /dca/dataset?id=j_*
+  API-->>Script: 200 [healed rows]

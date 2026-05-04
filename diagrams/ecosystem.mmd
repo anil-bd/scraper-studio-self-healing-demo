@@ -1,0 +1,57 @@
+flowchart TB
+  subgraph S["1. SETUP"]
+    A["POST /dca/collector<br/>Create Scraper Template<br/>→ c_*"]
+  end
+
+  subgraph B["2. BUILD CODE — Workflow 1 (AI Flow)"]
+    direction TB
+    B1["POST /dca/collectors/c_*/automate_template<br/>{ description, urls (max 1) }<br/>→ { id: ia_*, queued }"]
+    B2["GET /dca/collectors/c_*/automate_template/progress<br/>poll until status: done"]
+    B1 --> B2
+  end
+
+  subgraph H["3. UPDATE CODE — Workflow 2 (Self-Healing)"]
+    direction TB
+    H1["POST /dca/collectors/c_*/refactor_template<br/>{ prompt, custom_input }<br/>→ heal job ia_*"]
+    H2["GET /dca/collectors/c_*/refactor_template/progress<br/>status: pending → running → ?"]
+    H3{"status?"}
+    H4["⚠️ pending_answer<br/>step: user_approval<br/>+ diff + preview_result"]
+    H5["approve in Scraper Studio UI<br/>⚠️ no public API endpoint"]
+    H1 --> H2 --> H3
+    H3 -->|done| READY
+    H3 -->|pending_answer| H4 --> H5 --> H2
+  end
+
+  READY(("scraper code ready"))
+
+  subgraph R["4. RUN — pick one"]
+    direction LR
+    R1["POST /dca/trigger?collector=c_*&queue_next=1<br/>BATCH async<br/>body: array of {url}<br/>→ { collection_id: j_*, start_eta }"]
+    R2["POST /dca/trigger_immediate?collector=c_*<br/>REALTIME async<br/>body: {url}<br/>→ { response_id: z* }"]
+    R3["POST /dca/crawl?collector=c_*&timeout=50s<br/>REALTIME sync<br/>body: {url}<br/>→ rows inline OR 202 + z*"]
+  end
+
+  subgraph D["5. RECEIVE DATA"]
+    direction LR
+    D1["GET /dca/dataset?id=j_*<br/>202 building until ready<br/>200 rows when done"]
+    D2["GET /dca/get_result?response_id=z*<br/>→ rows"]
+    D3["Push delivery: webhook / S3 / GCS / SFTP / Azure / Email / Ali OSS<br/>configured in collector.deliver"]
+  end
+
+  subgraph I["INSPECT"]
+    I1["GET /dca/log/{job_id}<br/>Status, Success_rate, Lines, Pages, Job_time, ..."]
+  end
+
+  A --> B1
+  A --> H1
+  B2 -->|status: done| READY
+  READY --> R1
+  READY --> R2
+  READY --> R3
+  R1 --> D1
+  R1 -.->|or via collector deliver| D3
+  R2 --> D2
+  R2 -.->|or via collector deliver| D3
+  R3 -.->|on 202 timeout| D2
+  D1 --> I1
+  D2 --> I1
