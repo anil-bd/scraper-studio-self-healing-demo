@@ -12,8 +12,12 @@
 // Docs: https://docs.brightdata.com/api-reference/scraper-studio-api/ai-flow/overview
 
 import 'dotenv/config';
+import { writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 const BASE_URL = 'https://api.brightdata.com';
+const STATUS_PATH = join(dirname(fileURLToPath(import.meta.url)), 'status.json');
 
 const {
   BRIGHTDATA_API_KEY,
@@ -154,24 +158,45 @@ async function triggerSelfHealing({ collectorId, prompt, customInput = [] }) {
   return data;
 }
 
+// Sentinel — heal landed on a step that requires manual approval in the
+// Scraper Studio UI. The public API has no documented endpoint to programmatically
+// approve, so the script surfaces the diff and exits cleanly.
+class NeedsUserApprovalError extends Error {
+  constructor(progress) {
+    super('Heal job is waiting for user approval (step=user_approval).');
+    this.name = 'NeedsUserApprovalError';
+    this.progress = progress;
+  }
+}
+
 async function waitForHealing({ collectorId, intervalMs, timeoutMs }) {
   const url = `${BASE_URL}/dca/collectors/${encodeURIComponent(collectorId)}/refactor_template/progress`;
   const startedAt = Date.now();
   const okStates = new Set(['ready', 'done', 'completed', 'success', 'finished']);
   const failStates = new Set(['failed', 'error', 'errored', 'cancelled', 'canceled']);
+  // Observed: when the heal AI finishes generating a candidate, it stops at
+  // step="user_approval" / status="pending_answer" and waits for someone to
+  // accept or reject the diff in the Scraper Studio UI. The public REST surface
+  // does not expose an /answer or /approve endpoint (probed: all 404).
+  const needsUserStates = new Set(['pending_answer', 'pending_input', 'awaiting_answer', 'awaiting_input']);
   let attempt = 0;
   console.log(`  polling heal progress every ${intervalMs}ms (timeout ${timeoutMs}ms)`);
   while (true) {
     attempt += 1;
     const progress = await requestOrThrow('GET', url);
     const status = String((progress && (progress.status || progress.state)) || 'unknown');
+    const step = progress && progress.step;
     const pct = progress && (progress.progress ?? progress.percent);
-    const suffix = pct != null ? ` (${pct}%)` : '';
-    console.log(`  attempt ${attempt}: status=${status}${suffix}`);
+    const stepSuffix = step ? ` step=${step}` : '';
+    const pctSuffix = pct != null ? ` (${pct}%)` : '';
+    console.log(`  attempt ${attempt}: status=${status}${stepSuffix}${pctSuffix}`);
     const lower = status.toLowerCase();
     if (okStates.has(lower)) {
       console.log('  ✓ heal job finished');
       return progress;
+    }
+    if (needsUserStates.has(lower) || (step && String(step).toLowerCase() === 'user_approval')) {
+      throw new NeedsUserApprovalError(progress);
     }
     if (failStates.has(lower)) {
       const err = new Error(`Heal job ended with status "${status}"`);
@@ -241,6 +266,40 @@ function summarize(label, data) {
   }
 }
 
+// ─── Status badge ────────────────────────────────────────────────────────────
+
+// Writes status.json in the shields.io endpoint format so the README badge
+// reflects the latest run. Color/message map:
+//   healthy           → brightgreen   (scraper produced good data, no heal needed)
+//   healed            → brightgreen   (heal ran + re-scrape confirmed fix)
+//   broken            → red           (scraper produced bad data, no heal applied)
+//   awaiting approval → yellow        (heal is pending user approval in UI)
+//   error             → red           (workflow failed)
+function writeStatus(state, extra = {}) {
+  const colors = {
+    healthy: 'brightgreen',
+    healed: 'brightgreen',
+    broken: 'red',
+    'awaiting approval': 'yellow',
+    error: 'red',
+  };
+  const payload = {
+    schemaVersion: 1,
+    label: 'scraper',
+    message: state,
+    color: colors[state] || 'lightgrey',
+    cacheSeconds: 60,
+    // The fields below are ignored by shields.io but kept for human inspection.
+    last_run: new Date().toISOString(),
+    ...extra,
+  };
+  try {
+    writeFileSync(STATUS_PATH, JSON.stringify(payload, null, 2) + '\n');
+  } catch (e) {
+    console.error(`  (could not write status.json: ${e.message})`);
+  }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -264,10 +323,12 @@ async function main() {
 
     if (health.healthy && !forceHeal) {
       console.log('  scraper is producing usable data — skipping self-healing.');
+      writeStatus('healthy', { rows: before.data.length, reason: health.reason });
       return;
     }
     if (skipHeal) {
       console.log('  --no-heal set — skipping self-healing despite broken data.');
+      writeStatus(health.healthy ? 'healthy' : 'broken', { reason: health.reason });
       return;
     }
     if (forceHeal && health.healthy) {
@@ -275,12 +336,24 @@ async function main() {
     }
 
     // Step 3 — heal.
-    await triggerSelfHealing({ collectorId: COLLECTOR_ID, prompt: HEAL_PROMPT });
-    await waitForHealing({
-      collectorId: COLLECTOR_ID,
-      intervalMs: pollIntervalMs,
-      timeoutMs: pollTimeoutMs,
-    });
+    try {
+      await triggerSelfHealing({ collectorId: COLLECTOR_ID, prompt: HEAL_PROMPT });
+      await waitForHealing({
+        collectorId: COLLECTOR_ID,
+        intervalMs: pollIntervalMs,
+        timeoutMs: pollTimeoutMs,
+      });
+    } catch (e) {
+      if (e instanceof NeedsUserApprovalError) {
+        reportPendingApproval(e.progress);
+        writeStatus('awaiting approval', {
+          ai_job_id: e.progress?.id,
+          step: e.progress?.step,
+        });
+        process.exit(3);
+      }
+      throw e;
+    }
 
     // Step 4 — re-scrape to confirm the fix.
     const after = await scrape({ label: 'scrape:after' });
@@ -290,14 +363,37 @@ async function main() {
     console.log(`\n── final ──\n  before: ${health.reason}\n  after:  ${afterHealth.reason}`);
     if (!afterHealth.healthy) {
       console.error('  ✗ scraper still broken after healing — review the prompt or template.');
+      writeStatus('broken', { reason: afterHealth.reason });
       process.exit(2);
     }
     console.log('  ✓ self-healing produced usable data');
+    writeStatus('healed', { rows: after.data.length, reason: afterHealth.reason });
   } catch (err) {
     console.error('\n✗ Workflow failed:', err.message);
     if (err.body) console.error('  response:', err.body);
+    writeStatus('error', { error: err.message });
     process.exit(1);
   }
+}
+
+// Pretty-prints what the API gave us when the heal job needs user approval.
+// Surfaces the AI job ID, the candidate preview, and the diff size so the user
+// can decide whether to accept it in the Scraper Studio UI.
+function reportPendingApproval(progress) {
+  console.error('\n── heal: awaiting user approval ──');
+  console.error('  Heal job reached step="user_approval" / status="pending_answer".');
+  console.error('  The public API does not expose an endpoint to programmatically');
+  console.error('  approve the diff (probed: /answer, /approve, /accept, /apply,');
+  console.error('  /confirm, /feedback all return 404). Open Scraper Studio in the');
+  console.error('  browser to review the proposed change and accept/reject it.');
+  if (progress?.id) console.error(`\n  ai_job_id: ${progress.id}`);
+  if (progress?.completed_steps) console.error(`  completed_steps: ${progress.completed_steps.join(' → ')}`);
+  if (Array.isArray(progress?.preview_result) && progress.preview_result.length) {
+    console.error('\n  candidate preview (template_b output):');
+    console.error('  ' + JSON.stringify(progress.preview_result[0], null, 2).replace(/\n/g, '\n  '));
+  }
+  if (progress?.diff?.title) console.error(`\n  diff title: "${progress.diff.title}"`);
+  console.error('\n  Once approved in the UI, re-run this script to verify the fix.');
 }
 
 main();

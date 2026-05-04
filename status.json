@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "label": "scraper",
+  "message": "healthy",
+  "color": "brightgreen",
+  "cacheSeconds": 60,
+  "last_run": "2026-05-04T03:57:18.771Z",
+  "rows": 3,
+  "reason": "3 row(s) look good"
+}
