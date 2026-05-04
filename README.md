@@ -4,6 +4,8 @@
 
 Node.js implementation of [Bright Data Scraper Studio AI Flow — Workflow 2: Update an existing scraper with Self-Healing](https://docs.brightdata.com/api-reference/scraper-studio-api/ai-flow/overview).
 
+📊 **See [FLOW.md](./FLOW.md)** for end-to-end flow diagrams of the entire Scraper Studio API (setup → AI build → self-heal → run → receive), with the `pending_answer` / `user_approval` gap highlighted.
+
 The badge above reflects the latest local run committed to `main`. Possible
 values: <kbd>healthy</kbd> / <kbd>healed</kbd> 🟢 · <kbd>awaiting approval</kbd> 🟡 · <kbd>broken</kbd> / <kbd>error</kbd> 🔴 · <kbd>unknown</kbd> ⚪. The script writes
 `status.json` at the end of every run; commit + push it to refresh the badge.
